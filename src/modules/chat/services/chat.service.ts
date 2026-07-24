@@ -84,6 +84,12 @@ function toolLabel(toolName: string, args: Record<string, unknown>): string {
             return "Updating your daily report schedule…";
         case "check_connection_status":
             return "Checking your Telegram/Email connection status…";
+        case "connect_email": {
+            const email = typeof args.email === "string" ? args.email : "your email";
+            return `Connecting ${email} for notifications…`;
+        }
+        case "connect_telegram":
+            return "Generating your Telegram connection code…";
         default:
             return `Executing ${toolName}…`;
     }
@@ -304,6 +310,48 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     {
         type: "function",
         function: {
+            name: "connect_email",
+            description:
+                'Connect (or reconnect) the user\'s email address for notifications, such as the daily portfolio report or wallet-tracker alerts. Use this when the user explicitly asks to connect/link/add an email, or provides an email address specifically to receive notifications there (e.g. "connect my email as foo@gmail.com", "send reports to foo@gmail.com"). This sends a verification email — the user is NOT connected yet until they click the link in their inbox. Any valid email address works, not just Gmail.',
+            parameters: {
+                type: "object",
+                properties: {
+                    userId: {
+                        type: "string",
+                        description: "Application user id"
+                    },
+                    email: {
+                        type: "string",
+                        description: "The email address to connect, exactly as provided by the user"
+                    }
+                },
+                required: ["userId", "email"],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "connect_telegram",
+            description:
+                'Start connecting the user\'s Telegram account for notifications, such as the daily portfolio report or wallet-tracker alerts. Use this when the user explicitly asks to connect/link Telegram (e.g. "connect my telegram", "link telegram"). Returns a short verification code the user must manually send as a message to the SolSight Telegram bot to finish connecting — relay that code and instruction back to the user verbatim.',
+            parameters: {
+                type: "object",
+                properties: {
+                    userId: {
+                        type: "string",
+                        description: "Application user id"
+                    }
+                },
+                required: ["userId"],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
             name: "prepare_swap",
             description: "Prepare swap intent object from user input without execution",
             parameters: {
@@ -437,6 +485,8 @@ import { QuotaService } from "../../billing/services/quota.service";
 import { QuotaExceededException } from "../../billing/exceptions/quota-exceeded.exception";
 import { DailyReportSettingsService } from "../../portfolio-report/services/daily-report-settings.service";
 import { DailyReportChannel } from "../../portfolio-report/entities/daily-report-setting.entity";
+import { EmailSubscriptionService } from "../../email/services/email-subscription.service";
+import { BotService } from "../../bot/services/bot.service";
 
 @Injectable()
 export class ChatService {
@@ -452,6 +502,8 @@ export class ChatService {
         private readonly circuitBreaker: CircuitBreaker,
         private readonly quotaService: QuotaService,
         private readonly dailyReportSettingsService: DailyReportSettingsService,
+        private readonly emailSubscriptionService: EmailSubscriptionService,
+        private readonly botService: BotService,
         @InjectRepository(ChatSessionEntity)
         private readonly sessionRepo: Repository<ChatSessionEntity>,
         @InjectRepository(ChatMessageEntity)
@@ -1392,6 +1444,61 @@ export class ChatService {
                     } catch (error) {
                         const message = error instanceof BadRequestException ? error.message : "Failed to update daily report settings";
                         return JSON.stringify({ error: message });
+                    }
+                }
+
+                case "connect_email": {
+                    const resolvedUserId = userId || this.getStringArg(args, "userId");
+                    if (!resolvedUserId) {
+                        this.logger.warn("connect_email called without userId", ChatService.name);
+                        return JSON.stringify({ error: "User ID required — please log in" });
+                    }
+
+                    const email = this.getStringArg(args, "email").trim();
+                    const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                    if (!email || !EMAIL_REGEX.test(email)) {
+                        return JSON.stringify({ error: "Please provide a valid email address" });
+                    }
+
+                    try {
+                        await this.emailSubscriptionService.initiateVerification(resolvedUserId, email);
+                        return JSON.stringify({
+                            success: true,
+                            email,
+                            message: `A verification email was sent to ${email}. The user must click the link in that email to finish connecting.`
+                        });
+                    } catch (error) {
+                        this.logger.error(
+                            `connect_email failed: ${error instanceof Error ? error.message : "unknown"}`,
+                            error instanceof Error ? error.stack : undefined,
+                            ChatService.name
+                        );
+                        return JSON.stringify({ error: "Failed to send verification email. Please try again later." });
+                    }
+                }
+
+                case "connect_telegram": {
+                    const resolvedUserId = userId || this.getStringArg(args, "userId");
+                    if (!resolvedUserId) {
+                        this.logger.warn("connect_telegram called without userId", ChatService.name);
+                        return JSON.stringify({ error: "User ID required — please log in" });
+                    }
+
+                    try {
+                        const sub = await this.botService.generateToken(resolvedUserId);
+                        return JSON.stringify({
+                            success: true,
+                            verificationToken: sub.verificationToken,
+                            tokenExpiresAt: sub.tokenExpiresAt?.toISOString(),
+                            instructions: `Send the code ${sub.verificationToken} to the SolSight Telegram bot to connect your account.`
+                        });
+                    } catch (error) {
+                        this.logger.error(
+                            `connect_telegram failed: ${error instanceof Error ? error.message : "unknown"}`,
+                            error instanceof Error ? error.stack : undefined,
+                            ChatService.name
+                        );
+                        return JSON.stringify({ error: "Failed to generate a Telegram connection code. Please try again later." });
                     }
                 }
 
