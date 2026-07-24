@@ -175,14 +175,17 @@ export class PortfolioService {
             wallets = wallets.filter((w) => walletAddresses.includes(w.address));
         }
 
-        const tokenAccountGroups: ParsedTokenAccount[][] = await Promise.all(
-            wallets.map((wallet) => this.solanaService.getParsedTokenAccountsByOwner(cluster, new PublicKey(wallet.address)))
-        );
+        const [tokenAccountGroups, solBalances] = await Promise.all([
+            Promise.all(wallets.map((wallet) => this.solanaService.getParsedTokenAccountsByOwner(cluster, new PublicKey(wallet.address)))),
+            Promise.all(wallets.map((wallet) => this.solanaService.getBalance(cluster, new PublicKey(wallet.address))))
+        ]);
         const allTokenAccounts: ParsedTokenAccount[] = tokenAccountGroups.reduce((accumulator, group) => accumulator.concat(group), [] as ParsedTokenAccount[]);
 
         const solPrice = await this.tokenPriceService.getPrice(cluster, COMMON_TOKEN_MINT.SOL);
 
-        const total_balance_sol = wallets.reduce((acc, w) => acc + Number(w.balance || 0), 0);
+        // Fetched live for `cluster` above rather than reading `wallet.balance`, which is a cached
+        // column last synced under whatever cluster updateBalance() was called with (often mainnet).
+        const total_balance_sol = solBalances.reduce((acc, b) => acc + b, 0);
         let total_balance_usd = total_balance_sol * solPrice.priceUsd;
         const solValueUsd = total_balance_usd;
 
