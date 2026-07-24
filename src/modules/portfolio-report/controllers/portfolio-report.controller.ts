@@ -32,6 +32,7 @@ export class PortfolioReportController {
             return {
                 enabled: false,
                 channels: [],
+                network: "mainnet",
                 telegramConnected,
                 emailConnected
             };
@@ -42,6 +43,7 @@ export class PortfolioReportController {
             channels: setting.channels,
             hour: setting.hourUtc ?? undefined,
             minute: setting.minuteUtc ?? undefined,
+            network: setting.network,
             telegramConnected,
             emailConnected
         };

@@ -1,5 +1,6 @@
-import { ArrayNotEmpty, IsArray, IsBoolean, IsEnum, IsInt, IsOptional, Max, Min } from "class-validator";
+import { ArrayNotEmpty, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsOptional, Max, Min } from "class-validator";
 import { DailyReportChannel } from "../entities/daily-report-setting.entity";
+import { CLUSTERS, Cluster } from "../../../common/cluster/cluster.types";
 
 export class UpdateDailyReportSettingsDto {
     @IsBoolean()
@@ -22,6 +23,10 @@ export class UpdateDailyReportSettingsDto {
     @Min(0)
     @Max(59)
     minute?: number;
+
+    @IsOptional()
+    @IsIn(CLUSTERS)
+    network?: Cluster;
 }
 
 export class DailyReportSettingsResponseDto {
@@ -29,6 +34,7 @@ export class DailyReportSettingsResponseDto {
     channels: DailyReportChannel[];
     hour?: number;
     minute?: number;
+    network: Cluster;
     telegramConnected: boolean;
     emailConnected: boolean;
 }

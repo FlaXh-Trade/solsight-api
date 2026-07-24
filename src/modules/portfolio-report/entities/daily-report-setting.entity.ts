@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Index, ManyToOne } from "typeorm";
 import { User } from "../../users/entities/user.entity";
+import type { Cluster } from "../../../common/cluster/cluster.types";
 
 export enum DailyReportChannel {
     TELEGRAM = "telegram",
@@ -23,6 +24,9 @@ export class DailyReportSetting {
 
     @Column({ type: "enum", enum: DailyReportChannel, array: true, default: [DailyReportChannel.TELEGRAM] })
     channels: DailyReportChannel[];
+
+    @Column({ type: "varchar", default: "mainnet" })
+    network: Cluster;
 
     @Column({ type: "smallint", nullable: true })
     hourUtc: number | null;

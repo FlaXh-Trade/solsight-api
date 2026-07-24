@@ -9,7 +9,6 @@ import { GeminiService } from "../../../infra/gemini/gemini.service";
 import { getErrorMessage, logError } from "../../../common/errors/error-helper";
 import { PortfolioOverview } from "../types/daily-report.types";
 
-const REPORT_CLUSTER = "mainnet";
 const TOP_TOKENS_LIMIT = 10;
 
 @Injectable()
@@ -56,7 +55,13 @@ export class PortfolioReportService {
             return;
         }
 
-        const overview = (await this.portfolioService.getOverview(REPORT_CLUSTER, setting.userId, undefined, undefined, TOP_TOKENS_LIMIT)) as PortfolioOverview;
+        const overview = (await this.portfolioService.getOverview(
+            setting.network,
+            setting.userId,
+            undefined,
+            undefined,
+            TOP_TOKENS_LIMIT
+        )) as PortfolioOverview;
         const aiAnalysis = await this.generateAiAnalysis(overview);
 
         for (const channel of connectedChannels) {

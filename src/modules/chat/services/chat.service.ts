@@ -10,7 +10,7 @@ import { RagService } from "./rag.service";
 import { CircuitBreaker } from "../../../infra/executor/circuit-breaker/circuit-breaker";
 import * as fs from "fs";
 import * as path from "path";
-import type { Cluster } from "../../../common/cluster/cluster.types";
+import { isValidCluster, type Cluster } from "../../../common/cluster/cluster.types";
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, "../prompts/system.prompt.md"), "utf-8");
 
@@ -289,6 +289,11 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
                     minute: {
                         type: "number",
                         description: "Minute in UTC (0-59) the user wants to receive the report. Defaults to 0."
+                    },
+                    network: {
+                        type: "string",
+                        enum: ["mainnet", "devnet"],
+                        description: "Solana network the portfolio should be read from. Defaults to mainnet."
                     }
                 },
                 required: ["userId", "enabled"],
@@ -1365,20 +1370,24 @@ export class ChatService {
                         .filter((c): c is DailyReportChannel => c !== null);
                     const rawHour = Number(args.hour);
                     const rawMinute = Number(args.minute);
+                    const rawNetwork = this.getStringArg(args, "network");
+                    const network = isValidCluster(rawNetwork) ? rawNetwork : undefined;
 
                     try {
                         const setting = await this.dailyReportSettingsService.applyLocalSchedule(resolvedUserId, {
                             enabled,
                             channels: channels.length > 0 ? channels : undefined,
                             hour: Number.isFinite(rawHour) ? rawHour : undefined,
-                            minute: Number.isFinite(rawMinute) ? rawMinute : undefined
+                            minute: Number.isFinite(rawMinute) ? rawMinute : undefined,
+                            network
                         });
 
                         return JSON.stringify({
                             enabled: setting.enabled,
                             channels: setting.channels,
                             hourUtc: setting.hourUtc,
-                            minuteUtc: setting.minuteUtc
+                            minuteUtc: setting.minuteUtc,
+                            network: setting.network
                         });
                     } catch (error) {
                         const message = error instanceof BadRequestException ? error.message : "Failed to update daily report settings";

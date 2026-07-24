@@ -38,6 +38,7 @@ export class DailyReportSettingsService {
 
         toSave.enabled = params.enabled;
         toSave.channels = channels;
+        toSave.network = params.network ?? toSave.network ?? "mainnet";
         if (params.hourUtc !== undefined) toSave.hourUtc = params.hourUtc;
         if (params.minuteUtc !== undefined) toSave.minuteUtc = params.minuteUtc;
 
@@ -53,7 +54,7 @@ export class DailyReportSettingsService {
         const channels = input.channels;
 
         if (!input.enabled) {
-            return this.updateSettings(userId, { enabled: false, channels });
+            return this.updateSettings(userId, { enabled: false, channels, network: input.network });
         }
 
         if (input.hour === undefined || !Number.isInteger(input.hour) || input.hour < 0 || input.hour > 23) {
@@ -68,7 +69,8 @@ export class DailyReportSettingsService {
             enabled: true,
             channels,
             hourUtc: input.hour,
-            minuteUtc: minute
+            minuteUtc: minute,
+            network: input.network
         });
     }
 

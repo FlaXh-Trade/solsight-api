@@ -1,10 +1,12 @@
 import { DailyReportChannel } from "../entities/daily-report-setting.entity";
+import { Cluster } from "../../../common/cluster/cluster.types";
 
 export interface UpdateDailyReportSettingsParams {
     enabled: boolean;
     channels?: DailyReportChannel[];
     hourUtc?: number;
     minuteUtc?: number;
+    network?: Cluster;
 }
 
 export interface ApplyLocalScheduleParams {
@@ -12,6 +14,7 @@ export interface ApplyLocalScheduleParams {
     channels?: DailyReportChannel[];
     hour?: number;
     minute?: number;
+    network?: Cluster;
 }
 
 export interface PortfolioOverview {
