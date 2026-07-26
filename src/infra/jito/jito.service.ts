@@ -192,4 +192,28 @@ export class JitoService {
 
         return bs58.encode(signature);
     }
+
+    public async sendTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
+        if (cluster !== "mainnet") {
+            throw new ServiceUnavailableException("Jito transaction submission is unavailable on devnet.");
+        }
+        const { data } = await this.blockEngineClient.post<JitoJsonRpcResponse<string>>("/api/v1/transactions", {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "sendTransaction",
+            params: [signedTransactionBase64, { encoding: "base64" }]
+        });
+
+        if (data.error) {
+            throw new Error(`Jito sendTransaction failed: ${data.error.message ?? JSON.stringify(data.error)}`);
+        }
+
+        const txSignature = data.result;
+        if (!txSignature) {
+            throw new Error("Jito sendTransaction response missing signature");
+        }
+
+        this.logger.log(`Jito transaction submitted: signature=${txSignature}`);
+        return txSignature;
+    }
 }
