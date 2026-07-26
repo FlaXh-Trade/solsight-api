@@ -105,7 +105,9 @@ export class JitoService {
         if (cluster !== "mainnet") {
             throw new ServiceUnavailableException("Jito transaction submission is unavailable on devnet.");
         }
-        const response = await this.blockEngineClient.post<JitoJsonRpcResponse<string>>("/api/v1/transactions?bundleOnly=true", {
+        // TODO: has to remove the bundleOnly param for the transaction to be confirmed
+        // Tried to raise the tip fee but still got bundle rejected
+        const response = await this.blockEngineClient.post<JitoJsonRpcResponse<string>>("/api/v1/transactions", {
             jsonrpc: "2.0",
             id: 1,
             method: "sendTransaction",
