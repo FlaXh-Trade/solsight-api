@@ -62,33 +62,33 @@ export class SwapService {
                 this.logger.log(`Gasless swap requested: feeToken=${this.shortAddr(dto.gaslessFeeToken)}`);
             }
 
-            // Anti-MEV: have the executor embed a Jito tip so the built transaction is
-            // bundle-ready. The tip must be inside the tx or the Jito bundle won't land.
-            const antiMevParams = await this.buildAntiMevBuildParams(cluster, dto);
+            // Fees: honor user-selected priority fee / Jito tip when provided, else fall back
+            // to the backend auto-derivation. See buildFeeBuildParams for the mapping.
+            const feeParams = await this.buildFeeBuildParams(cluster, dto);
 
             return await executor.getSwapTransaction(cluster, {
                 quoteResponse: dto.quoteResponse,
                 userPublicKey: dto.userPublicKey,
                 wrapAndUnwrapSol: dto.wrapAndUnwrapSol ?? true,
                 ...(dto.gaslessFeeToken ? { feeToken: dto.gaslessFeeToken } : {}),
-                ...antiMevParams
+                ...feeParams
             });
         } catch (error) {
             throw this.toHttpException(error);
         }
     }
 
-    async executeSwap(cluster: Cluster, dto: ExecuteSwapDto): Promise<{ signature: string }> {
-        let result: { signature: string };
+    async executeSwap(cluster: Cluster, dto: ExecuteSwapDto): Promise<{ signature: string; lastValidBlockHeight: number }> {
+        let signature: string;
 
         if (dto.gaslessFeeToken) {
             const executor = this.circuitBreaker.forCluster(cluster);
             const capabilities = await executor.getCapabilities();
             this.assertGaslessSupported(dto.gaslessFeeToken, capabilities);
             try {
+                // Send only — the client subscribes to the signature and reports confirmation.
                 const koraSent = await this.koraService.signAndSendTransaction({ transaction: dto.signedTransaction });
-                await this.solanaService.confirmSignature(cluster, koraSent.signature);
-                result = { signature: koraSent.signature };
+                signature = koraSent.signature;
             } catch (error) {
                 if (error instanceof HttpException) {
                     throw error;
@@ -98,28 +98,22 @@ export class SwapService {
             }
         } else if (dto.antiMevRpc === "sec") {
             try {
-                const jitoResult = await this.jitoService.sendBundle(cluster, dto.signedTransaction);
-                if (!jitoResult.landed) {
-                    // Bundle was accepted into the auction but never included on-chain
-                    // (usually a losing tip). Surface an actionable error, not a raw timeout.
-                    throw new HttpException(
-                        `Anti-MEV bundle did not land (status: ${jitoResult.status}). Please try again, optionally without anti-MEV protection.`,
-                        HttpStatus.BAD_GATEWAY
-                    );
-                }
-                result = { signature: jitoResult.signature };
+                // Send via Jito (bundleOnly=true for revert protection) and return immediately;
+                // the client tracks on-chain landing rather than the server polling for it.
+                const jitoResult = await this.jitoService.sendTransaction(cluster, dto.signedTransaction);
+                signature = jitoResult.signature;
             } catch (error) {
                 if (error instanceof HttpException) {
                     throw error;
                 }
                 const message = error instanceof Error ? error.message : String(error);
-                throw new InternalServerErrorException(`Jito bundle submission failed: ${message}`);
+                throw new InternalServerErrorException(`Jito transaction submission failed: ${message}`);
             }
         } else {
-            result = await this.submitSignedTransaction(cluster, dto.signedTransaction, dto.lastValidBlockHeight);
+            signature = (await this.submitSignedTransaction(cluster, dto.signedTransaction)).signature;
         }
 
-        return result;
+        return { signature, lastValidBlockHeight: dto.lastValidBlockHeight };
     }
 
     async getSwapInfo(cluster: Cluster, _dto: GetSwapInfoDto): Promise<SwapInfoResponse> {
@@ -146,11 +140,10 @@ export class SwapService {
         return { usd: price.priceUsd };
     }
 
-    private async submitSignedTransaction(cluster: Cluster, signedTransactionBase64: string, latestValidBlockHeight: number): Promise<{ signature: string }> {
+    private async submitSignedTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<{ signature: string }> {
         try {
-            return await this.solanaService.submitAndConfirm(cluster, signedTransactionBase64, {
-                lastValidBlockheight: latestValidBlockHeight
-            });
+            // Send only — the client confirms the returned signature.
+            return await this.solanaService.submit(cluster, signedTransactionBase64);
         } catch (error) {
             this.logger.error("Failed to execute swap", error);
             const message = error instanceof Error ? error.message : "Swap execution failed.";
@@ -159,24 +152,59 @@ export class SwapService {
     }
 
     /**
-     * When anti-MEV protection is requested, produces the executor build params that
-     * embed a Jito tip into the transaction so the bundle can land. Returns empty params
-     * when protection is off or unset.
+     * Builds the executor fee params from the user's swap-config selections.
      *
-     * Note: DEX-level Jito compatibility (`forJitoBundle`) is decided at quote time on the
-     * client; here we only add the tip, which is what makes the built tx bundle-ready.
+     * Jupiter's `/swap` accepts a priority fee **or** a Jito tip in
+     * `prioritizationFeeLamports` — never both — so the two are mutually exclusive on
+     * mainnet and we reject requests that ask for both. The devnet (solsight) executor
+     * has no Jito integration; it takes a raw `priorityFeeLamports` and converts it to a
+     * compute-unit price itself.
+     *
+     * Mapping (mainnet/Jupiter):
+     *  - anti-MEV "sec"        → `{ prioritizationFeeLamports: { jitoTipLamports } }`
+     *                            (user tip, or the auto 95th-percentile floor); priority ignored.
+     *  - priority custom       → `{ prioritizationFeeLamports: <lamports> }`
+     *  - priority auto         → `{ prioritizationFeeLamports: { priorityLevelWithMaxLamports } }`
+     *                            capped by `maxAutoFeeLamports`.
+     *
+     * Devnet (solsight): `{ priorityFeeLamports }` when set; tip is always 0 on devnet.
      */
-    private async buildAntiMevBuildParams(cluster: Cluster, dto: GetSwapTransactionDto): Promise<Partial<SwapRequest>> {
-        if (dto.antiMevRpc !== "sec") {
-            return {};
+    private async buildFeeBuildParams(cluster: Cluster, dto: GetSwapTransactionDto): Promise<Partial<SwapRequest>> {
+        // Guard: Jupiter /swap cannot carry both a priority fee and a Jito tip at once.
+        if (cluster === "mainnet" && dto.priorityFeeLamports && dto.tipLamports) {
+            throw new BadRequestException(
+                "Jupiter /swap does not support both a priority fee and a Jito tip at once. Use anti-MEV (tip) or a priority fee, not both."
+            );
         }
 
-        // Anti-MEV bundles must win Jito's auction, so use the 95th-percentile tip (with a
-        // hard floor) — not the 75th-percentile display estimate used for the fee preview.
-        const jitoTipLamports = await this.jitoService.getAntiMevTipLamports(cluster);
-        this.logger.log(`Anti-MEV swap requested: embedding Jito tip=${jitoTipLamports} lamports`);
+        // Devnet executor: no Jito; forward the raw priority fee for CU-price conversion.
+        if (cluster !== "mainnet") {
+            return typeof dto.priorityFeeLamports === "number" ? { priorityFeeLamports: dto.priorityFeeLamports } : {};
+        }
 
-        return { prioritizationFeeLamports: { jitoTipLamports } };
+        // Anti-MEV: embed a Jito tip so the transaction is bundle-ready. The tip must be
+        // inside the tx or Jito won't include it. Priority fee is ignored on this path.
+        if (dto.antiMevRpc === "sec") {
+            const jitoTipLamports = dto.tipLamports ?? (await this.jitoService.getAntiMevTipLamports(cluster));
+            this.logger.log(`Anti-MEV swap requested: embedding Jito tip=${jitoTipLamports} lamports`);
+            return { prioritizationFeeLamports: { jitoTipLamports } };
+        }
+
+        // Custom priority fee: forward the raw lamports amount as-is.
+        if (typeof dto.priorityFeeLamports === "number") {
+            return { prioritizationFeeLamports: dto.priorityFeeLamports };
+        }
+
+        // Auto priority fee: let Jupiter pick within the user's max, honoring the fee cap.
+        const maxLamports = dto.maxAutoFeeLamports ?? (await this.aggregateFeeFields(cluster)).maxAutoFeeLamports;
+        return {
+            prioritizationFeeLamports: {
+                priorityLevelWithMaxLamports: {
+                    priorityLevel: "high",
+                    maxLamports
+                }
+            }
+        };
     }
 
     private shortAddr(address: string): string {

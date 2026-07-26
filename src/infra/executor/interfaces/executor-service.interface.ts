@@ -18,6 +18,13 @@ export interface SwapRequest extends JupiterSwapRequest {
      * payment instruction. Must equal the swap's input or output mint.
      */
     feeToken?: string;
+
+    /**
+     * solsight-executor extension: user-selected priority fee in TOTAL lamports.
+     * The executor converts this to a compute-unit price using its own CU estimate.
+     * The Jupiter executor ignores it (it uses `prioritizationFeeLamports` instead).
+     */
+    priorityFeeLamports?: number;
 }
 export type SwapResponse = JupiterSwapResponse;
 

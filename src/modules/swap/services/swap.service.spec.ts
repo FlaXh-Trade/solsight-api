@@ -38,6 +38,7 @@ function createService(executor: jest.Mocked<ExecutorService>) {
     } as unknown as jest.Mocked<CircuitBreaker>;
     const solanaService = {
         getRecentPrioritizationFees: jest.fn().mockResolvedValue([{ prioritizationFee: 120_000 }]),
+        submit: jest.fn().mockResolvedValue({ signature: "signature" }),
         submitAndConfirm: jest.fn().mockResolvedValue({ signature: "signature" }),
         confirmSignature: jest.fn().mockResolvedValue(undefined)
     } as unknown as jest.Mocked<SolanaService>;
@@ -47,7 +48,7 @@ function createService(executor: jest.Mocked<ExecutorService>) {
     const jitoService = {
         getLandedTip75thPercentileLamports: jest.fn().mockResolvedValue(60_000),
         getAntiMevTipLamports: jest.fn().mockResolvedValue(80_000),
-        sendBundle: jest.fn().mockResolvedValue({ signature: "jito-signature", bundleId: "bundle-1", landed: true, status: "Landed" })
+        sendTransaction: jest.fn().mockResolvedValue({ signature: "jito-signature", bundleId: "bundle-1" })
     } as unknown as jest.Mocked<JitoService>;
     const redisService = {
         get: jest.fn().mockResolvedValue(null),
@@ -166,24 +167,26 @@ describe("SwapService", () => {
         const executor = createExecutor(mainnetCapabilities);
         const { service, koraService, solanaService } = createService(executor);
 
-        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx", gaslessFeeToken: "FeeMint" })).rejects.toBeInstanceOf(
-            GaslessNotSupportedException
-        );
+        await expect(
+            service.executeSwap("mainnet", { signedTransaction: "base64tx", lastValidBlockHeight: 123, gaslessFeeToken: "FeeMint" })
+        ).rejects.toBeInstanceOf(GaslessNotSupportedException);
 
         expect(koraService.signAndSendTransaction.mock.calls).toHaveLength(0);
         expect(solanaService.confirmSignature.mock.calls).toHaveLength(0);
     });
 
-    it("keeps signed gasless submission on the existing Kora and Solana path", async () => {
+    it("sends signed gasless transactions via Kora without blocking on confirmation", async () => {
         const executor = createExecutor(devnetCapabilities);
         const { service, koraService, solanaService } = createService(executor);
 
-        await expect(service.executeSwap("devnet", { signedTransaction: "base64tx", gaslessFeeToken: "FeeMint" })).resolves.toEqual({
-            signature: "kora-signature"
+        await expect(service.executeSwap("devnet", { signedTransaction: "base64tx", lastValidBlockHeight: 123, gaslessFeeToken: "FeeMint" })).resolves.toEqual({
+            signature: "kora-signature",
+            lastValidBlockHeight: 123
         });
 
         expect(koraService.signAndSendTransaction.mock.calls).toContainEqual([{ transaction: "base64tx" }]);
-        expect(solanaService.confirmSignature.mock.calls).toContainEqual(["devnet", "kora-signature"]);
+        // Send-then-confirm: the server no longer waits on confirmation; the client does.
+        expect(solanaService.confirmSignature.mock.calls).toHaveLength(0);
         expect(executor.getSwapTransaction.mock.calls).toHaveLength(0);
     });
 
@@ -208,14 +211,15 @@ describe("SwapService", () => {
         ]);
     });
 
-    it("does not embed a Jito tip when anti-MEV is off", async () => {
+    it("uses the user-selected Jito tip on the anti-MEV path when provided", async () => {
         const executor = createExecutor(mainnetCapabilities);
         const { service } = createService(executor);
 
         await service.getSwapTransaction("mainnet", {
             quoteResponse: {} as never,
             userPublicKey: "UserPublicKey",
-            antiMevRpc: "off"
+            antiMevRpc: "sec",
+            tipLamports: 55_000
         });
 
         expect(executor.getSwapTransaction.mock.calls).toContainEqual([
@@ -223,43 +227,128 @@ describe("SwapService", () => {
             {
                 quoteResponse: {},
                 userPublicKey: "UserPublicKey",
-                wrapAndUnwrapSol: true
+                wrapAndUnwrapSol: true,
+                prioritizationFeeLamports: { jitoTipLamports: 55_000 }
             }
         ]);
     });
 
-    it("routes anti-MEV execution through the Jito block engine when the bundle lands", async () => {
+    it("forwards a custom priority fee as a raw lamports amount when anti-MEV is off", async () => {
+        const executor = createExecutor(mainnetCapabilities);
+        const { service } = createService(executor);
+
+        await service.getSwapTransaction("mainnet", {
+            quoteResponse: {} as never,
+            userPublicKey: "UserPublicKey",
+            antiMevRpc: "off",
+            priorityFeeLamports: 200_000
+        });
+
+        expect(executor.getSwapTransaction.mock.calls).toContainEqual([
+            "mainnet",
+            {
+                quoteResponse: {},
+                userPublicKey: "UserPublicKey",
+                wrapAndUnwrapSol: true,
+                prioritizationFeeLamports: 200_000
+            }
+        ]);
+    });
+
+    it("uses priorityLevelWithMaxLamports capped by maxAutoFeeLamports when priority is on auto", async () => {
+        const executor = createExecutor(mainnetCapabilities);
+        const { service } = createService(executor);
+
+        await service.getSwapTransaction("mainnet", {
+            quoteResponse: {} as never,
+            userPublicKey: "UserPublicKey",
+            antiMevRpc: "off",
+            maxAutoFeeLamports: 500_000
+        });
+
+        expect(executor.getSwapTransaction.mock.calls).toContainEqual([
+            "mainnet",
+            {
+                quoteResponse: {},
+                userPublicKey: "UserPublicKey",
+                wrapAndUnwrapSol: true,
+                prioritizationFeeLamports: { priorityLevelWithMaxLamports: { priorityLevel: "high", maxLamports: 500_000 } }
+            }
+        ]);
+    });
+
+    it("rejects a request that sets both a priority fee and a Jito tip on mainnet", async () => {
+        const executor = createExecutor(mainnetCapabilities);
+        const { service } = createService(executor);
+
+        await expect(
+            service.getSwapTransaction("mainnet", {
+                quoteResponse: {} as never,
+                userPublicKey: "UserPublicKey",
+                priorityFeeLamports: 200_000,
+                tipLamports: 55_000
+            })
+        ).rejects.toBeInstanceOf(BadRequestException);
+
+        expect(executor.getSwapTransaction.mock.calls).toHaveLength(0);
+    });
+
+    it("forwards a raw priority fee to the devnet (solsight) executor", async () => {
+        const executor = createExecutor(devnetCapabilities);
+        const { service } = createService(executor);
+
+        await service.getSwapTransaction("devnet", {
+            quoteResponse: {} as never,
+            userPublicKey: "UserPublicKey",
+            priorityFeeLamports: 150_000
+        });
+
+        expect(executor.getSwapTransaction.mock.calls).toContainEqual([
+            "devnet",
+            {
+                quoteResponse: {},
+                userPublicKey: "UserPublicKey",
+                wrapAndUnwrapSol: true,
+                priorityFeeLamports: 150_000
+            }
+        ]);
+    });
+
+    it("routes anti-MEV execution through Jito sendTransaction and returns immediately", async () => {
         const executor = createExecutor(mainnetCapabilities);
         const { service, jitoService, solanaService } = createService(executor);
 
-        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx", antiMevRpc: "sec" })).resolves.toEqual({
-            signature: "jito-signature"
+        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx", lastValidBlockHeight: 123, antiMevRpc: "sec" })).resolves.toEqual({
+            signature: "jito-signature",
+            lastValidBlockHeight: 123
         });
 
-        expect(jitoService.sendBundle.mock.calls).toContainEqual(["mainnet", "base64tx"]);
-        expect(solanaService.submitAndConfirm.mock.calls).toHaveLength(0);
+        expect(jitoService.sendTransaction.mock.calls).toContainEqual(["mainnet", "base64tx"]);
+        expect(solanaService.submit.mock.calls).toHaveLength(0);
     });
 
-    it("returns an actionable error when the anti-MEV bundle does not land", async () => {
+    it("wraps a Jito sendTransaction failure as a server error", async () => {
         const executor = createExecutor(mainnetCapabilities);
         const { service, jitoService } = createService(executor);
-        jitoService.sendBundle.mockResolvedValueOnce({ signature: "jito-signature", bundleId: "bundle-1", landed: false, status: "Pending" });
+        jitoService.sendTransaction.mockRejectedValueOnce(new Error("block engine unavailable"));
 
-        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx", antiMevRpc: "sec" })).rejects.toMatchObject({
-            status: 502
+        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx", lastValidBlockHeight: 123, antiMevRpc: "sec" })).rejects.toMatchObject({
+            status: 500
         });
     });
 
-    it("submits through the default RPC path when no protection is requested", async () => {
+    it("submits through the default RPC path (send only) when no protection is requested", async () => {
         const executor = createExecutor(mainnetCapabilities);
         const { service, jitoService, koraService, solanaService } = createService(executor);
 
-        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx" })).resolves.toEqual({
-            signature: "signature"
+        await expect(service.executeSwap("mainnet", { signedTransaction: "base64tx", lastValidBlockHeight: 123 })).resolves.toEqual({
+            signature: "signature",
+            lastValidBlockHeight: 123
         });
 
-        expect(solanaService.submitAndConfirm.mock.calls).toContainEqual(["mainnet", "base64tx"]);
-        expect(jitoService.sendBundle.mock.calls).toHaveLength(0);
+        expect(solanaService.submit.mock.calls).toContainEqual(["mainnet", "base64tx"]);
+        expect(solanaService.submitAndConfirm.mock.calls).toHaveLength(0);
+        expect(jitoService.sendTransaction.mock.calls).toHaveLength(0);
         expect(koraService.signAndSendTransaction.mock.calls).toHaveLength(0);
     });
 });

@@ -96,6 +96,22 @@ export class SolanaService {
         }
     }
 
+    /**
+     * Sends a signed transaction to the RPC and returns the signature immediately,
+     * WITHOUT waiting for confirmation. The client subscribes to the signature and
+     * reports landing/failure, which keeps the swap flow from blocking on the network.
+     */
+    async submit(cluster: Cluster, signedTransactionBase64: string, options: SubmitAndConfirmOptions = {}): Promise<{ signature: string }> {
+        const rpc = this.heliusResolver.forCluster(cluster);
+        const txBuffer = Buffer.from(signedTransactionBase64, "base64");
+        const signature = await rpc.sendRawTransaction(txBuffer, {
+            skipPreflight: options.skipPreflight ?? false,
+            maxRetries: options.maxRetries ?? 3,
+            preflightCommitment: options.commitment ?? "confirmed"
+        });
+        return { signature };
+    }
+
     async submitAndConfirm(cluster: Cluster, signedTransactionBase64: string, options: SubmitAndConfirmOptions = {}): Promise<{ signature: string }> {
         const rpc = this.heliusResolver.forCluster(cluster);
         const txBuffer = Buffer.from(signedTransactionBase64, "base64");
