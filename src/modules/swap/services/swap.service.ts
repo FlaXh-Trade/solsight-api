@@ -116,7 +116,7 @@ export class SwapService {
                 throw new InternalServerErrorException(`Jito bundle submission failed: ${message}`);
             }
         } else {
-            result = await this.submitSignedTransaction(cluster, dto.signedTransaction);
+            result = await this.submitSignedTransaction(cluster, dto.signedTransaction, dto.lastValidBlockHeight);
         }
 
         return result;
@@ -146,9 +146,11 @@ export class SwapService {
         return { usd: price.priceUsd };
     }
 
-    private async submitSignedTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<{ signature: string }> {
+    private async submitSignedTransaction(cluster: Cluster, signedTransactionBase64: string, latestValidBlockHeight: number): Promise<{ signature: string }> {
         try {
-            return await this.solanaService.submitAndConfirm(cluster, signedTransactionBase64);
+            return await this.solanaService.submitAndConfirm(cluster, signedTransactionBase64, {
+                lastValidBlockheight: latestValidBlockHeight
+            });
         } catch (error) {
             this.logger.error("Failed to execute swap", error);
             const message = error instanceof Error ? error.message : "Swap execution failed.";
