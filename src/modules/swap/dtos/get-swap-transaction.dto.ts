@@ -68,30 +68,16 @@ export class GetSwapTransactionDto {
     @IsIn(ANTI_MEV_RPC_VALUES)
     antiMevRpc?: AntiMevRpc;
 
-    /**
-     * User-selected priority fee in TOTAL lamports. `undefined` = auto (backend
-     * derives a `priorityLevelWithMaxLamports` request, capped by `maxAutoFeeLamports`).
-     * Ignored when `antiMevRpc === "sec"` — Jupiter's `/swap` cannot carry both a
-     * priority fee and a Jito tip in one transaction.
-     */
     @IsOptional()
     @IsNumber()
     @Min(0)
     priorityFeeLamports?: number;
 
-    /**
-     * User-selected Jito tip in lamports. Only applied on the anti-MEV path; `undefined`
-     * falls back to the auto 95th-percentile tip.
-     */
     @IsOptional()
     @IsNumber()
     @Min(0)
     tipLamports?: number;
 
-    /**
-     * Upper bound for the auto priority-fee estimate (used as `maxLamports` in the
-     * `priorityLevelWithMaxLamports` request when priority is on auto).
-     */
     @IsOptional()
     @IsNumber()
     @Min(0)
