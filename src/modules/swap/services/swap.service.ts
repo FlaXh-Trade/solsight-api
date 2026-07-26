@@ -45,7 +45,8 @@ export class SwapService {
                 outputMint: dto.outputMint,
                 amount: dto.amount,
                 swapMode: dto.swapMode,
-                slippageBps: dto.slippageBps
+                slippageBps: dto.slippageBps,
+                ...(dto.forJitoBundle ? { forJitoBundle: true } : {})
             });
         } catch (error) {
             throw this.toHttpException(error);

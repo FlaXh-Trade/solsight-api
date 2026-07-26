@@ -1,4 +1,4 @@
-import { IsIn, IsNumber, IsString, Min } from "class-validator";
+import { IsBoolean, IsIn, IsNumber, IsOptional, IsString, Min } from "class-validator";
 import { Type } from "class-transformer";
 import { IsSolanaAddress } from "../../../common/validators/is-solana-address.validator";
 import { ClusterQueryDto } from "../../../common/cluster/cluster-query.dto";
@@ -21,4 +21,9 @@ export class GetQuoteDto extends ClusterQueryDto {
     @Type(() => Number)
     @Min(0)
     slippageBps: number;
+
+    @IsOptional()
+    @IsBoolean()
+    @Type(() => Boolean)
+    forJitoBundle?: boolean;
 }

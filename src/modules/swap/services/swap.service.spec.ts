@@ -77,6 +77,33 @@ describe("SwapService", () => {
         expect(executor.getQuote.mock.calls[0]?.[0]).toBe("mainnet");
     });
 
+    it("forwards forJitoBundle to the executor only when requested", async () => {
+        const executor = createExecutor(mainnetCapabilities);
+        const { service } = createService(executor);
+
+        await service.getQuote("mainnet", {
+            inputMint: "InputMint",
+            outputMint: "OutputMint",
+            amount: "100",
+            swapMode: "ExactIn",
+            slippageBps: 50,
+            cluster: "mainnet",
+            forJitoBundle: true
+        });
+        expect(executor.getQuote.mock.calls[0]?.[1]).toMatchObject({ forJitoBundle: true });
+
+        executor.getQuote.mockClear();
+        await service.getQuote("mainnet", {
+            inputMint: "InputMint",
+            outputMint: "OutputMint",
+            amount: "100",
+            swapMode: "ExactIn",
+            slippageBps: 50,
+            cluster: "mainnet"
+        });
+        expect(executor.getQuote.mock.calls[0]?.[1]).not.toHaveProperty("forJitoBundle");
+    });
+
     it("projects executor capabilities into the additive swap-info response", async () => {
         const executor = createExecutor(devnetCapabilities);
         const { service, redisService } = createService(executor);
