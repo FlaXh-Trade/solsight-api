@@ -1094,7 +1094,7 @@ export class ChatService {
 
                     const fallback = await this.discoveryService.getTrending(cluster, {
                         cluster,
-                        sort_by: (sortBy as SortByTrending | undefined) || SortByTrending.VOLUME_24H,
+                        sort_by: (sortBy as SortByTrending | undefined) || SortByTrending.TXNS_24H,
                         time_frame: TimeFrame.TWENTY_FOUR_HOURS,
                         limit: 5,
                         offset: 0
