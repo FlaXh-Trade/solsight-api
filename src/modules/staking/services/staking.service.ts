@@ -429,7 +429,9 @@ export class StakingService {
         this.assertRequestCluster(cluster, network);
 
         try {
-            return await this.solanaService.submitAndConfirm(network, dto.signedTransaction);
+            return await this.solanaService.submitAndConfirm(network, dto.signedTransaction, {
+                lastValidBlockheight: dto.lastValidBlockHeight
+            });
         } catch (error) {
             this.logger.error("Failed to execute staking transaction", error);
             const message = error instanceof Error ? error.message : "Staking transaction execution failed.";

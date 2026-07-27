@@ -1,4 +1,4 @@
-import { IsBoolean, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, ValidateNested } from "class-validator";
+import { IsBoolean, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Min, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import type { QuoteResponse } from "../../../infra/executor/interfaces/executor-service.interface";
 import type { JupiterRoutePlanStep, JupiterSwapMode } from "../../../infra/jupiter/types";
@@ -67,4 +67,19 @@ export class GetSwapTransactionDto {
     @IsOptional()
     @IsIn(ANTI_MEV_RPC_VALUES)
     antiMevRpc?: AntiMevRpc;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(0)
+    priorityFeeLamports?: number;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(0)
+    tipLamports?: number;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(0)
+    maxAutoFeeLamports?: number;
 }

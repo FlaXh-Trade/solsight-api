@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { AddressLookupTableAccount, Commitment, LAMPORTS_PER_SOL, PublicKey, RecentPrioritizationFees } from "@solana/web3.js";
+import { AddressLookupTableAccount, Commitment, LAMPORTS_PER_SOL, PublicKey, RecentPrioritizationFees, VersionedTransaction } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from "@solana/spl-token";
 import { HeliusResolver } from "./helius.resolver";
 import type { Cluster } from "../../common/cluster/cluster.types";
@@ -96,11 +96,28 @@ export class SolanaService {
         }
     }
 
+    /**
+     * Sends a signed transaction to the RPC and returns the signature immediately,
+     * WITHOUT waiting for confirmation. The client subscribes to the signature and
+     * reports landing/failure, which keeps the swap flow from blocking on the network.
+     */
+    async submit(cluster: Cluster, signedTransactionBase64: string, options: SubmitAndConfirmOptions = {}): Promise<{ signature: string }> {
+        const rpc = this.heliusResolver.forCluster(cluster);
+        const txBuffer = Buffer.from(signedTransactionBase64, "base64");
+        const signature = await rpc.sendRawTransaction(txBuffer, {
+            skipPreflight: options.skipPreflight ?? false,
+            maxRetries: options.maxRetries ?? 3,
+            preflightCommitment: options.commitment ?? "confirmed"
+        });
+        return { signature };
+    }
+
     async submitAndConfirm(cluster: Cluster, signedTransactionBase64: string, options: SubmitAndConfirmOptions = {}): Promise<{ signature: string }> {
         const rpc = this.heliusResolver.forCluster(cluster);
         const txBuffer = Buffer.from(signedTransactionBase64, "base64");
         const commitment = options.commitment ?? "confirmed";
-        const latestBlockhash = await rpc.getLatestBlockhash(commitment);
+        const tx = VersionedTransaction.deserialize(txBuffer);
+        const blockhash = tx.message.recentBlockhash;
 
         const signature = await rpc.sendRawTransaction(txBuffer, {
             skipPreflight: options.skipPreflight ?? false,
@@ -110,8 +127,8 @@ export class SolanaService {
         await rpc.confirmTransaction(
             {
                 signature,
-                blockhash: latestBlockhash.blockhash,
-                lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+                blockhash: blockhash,
+                lastValidBlockHeight: options.lastValidBlockheight!
             },
             commitment
         );
