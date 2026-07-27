@@ -277,8 +277,8 @@ export class PortfolioService {
         // Add SOL to allocation
         if (solValueUsd > 0) {
             allocation.push({
-                name: "Solana",
-                symbol: "SOL",
+                name: solMeta?.name || "Unknown",
+                symbol: solMeta?.symbol || "???",
                 value_usd: solValueUsd,
                 percentage: total_balance_usd > 0 ? (solValueUsd / total_balance_usd) * 100 : 0
             });
@@ -305,15 +305,57 @@ export class PortfolioService {
         const total_investment_usd = Array.from(pnlMap.values()).reduce((acc, r) => acc + r.investment * solPrice.priceUsd, 0);
         const roi_percent = total_investment_usd > 0 ? (total_pnl / total_investment_usd) * 100 : 0;
 
+        // 24h deltas: approximate using each held mint's price ~24h ago (day-bucketed history),
+        // holding current amounts constant. Ignores trades within the last 24h for the price-diff
+        // piece, which is why pnl_change_24h adds back the realized PnL those trades produced.
+        const nowSec = Math.floor(Date.now() / 1000);
+        const dayAgoSec = nowSec - 86400;
+        const priceHistories = await Promise.all(mintAddresses.map((mint) => this.tokenPriceService.getPriceHistory(cluster, mint, dayAgoSec, nowSec)));
+        const price24hAgoMap = new Map<string, number>();
+        mintAddresses.forEach((mint, i) => {
+            const chart = priceHistories[i];
+            if (chart.size > 0) price24hAgoMap.set(mint, this.getSolPriceNear(dayAgoSec, chart));
+        });
+
+        let balance24hAgoUsd = total_balance_sol * (price24hAgoMap.get(COMMON_TOKEN_MINT.SOL) ?? solPrice.priceUsd);
+        for (const [mint, data] of aggregatedTokens) {
+            const price24hAgo = price24hAgoMap.get(mint) ?? tokenPrices.get(mint)?.priceUsd ?? 0;
+            balance24hAgoUsd += data.amount * price24hAgo;
+        }
+        const balance_change_24h = balance24hAgoUsd > 0 ? ((total_balance_usd - balance24hAgoUsd) / balance24hAgoUsd) * 100 : 0;
+
+        // pnl 24h change = realized PnL booked by trades in the last 24h + unrealized PnL swing
+        // from price movement over the last 24h on positions still held.
+        const tradesLast24h = trades.filter((t) => t.timestamp >= dayAgoSec);
+        const tradesBefore24h = trades.filter((t) => t.timestamp < dayAgoSec);
+        const pnlMapBefore24h = this.calculatePnl(tradesBefore24h);
+        const avgSolPriceLast24h = await this.getAvgHistoricalSolPrice(cluster, tradesLast24h, solPrice.priceUsd);
+
+        let realizedPnlLast24hUsd = 0;
+        for (const [mint, record] of pnlMap) {
+            const before = pnlMapBefore24h.get(mint);
+            realizedPnlLast24hUsd += (record.pnl - (before?.pnl ?? 0)) * avgSolPriceLast24h;
+        }
+
+        let unrealizedPnlChange24hUsd = 0;
+        for (const [mint, record] of pnlMap) {
+            if (record.totalTokensBought <= 0) continue;
+            const currentPrice = tokenPrices.get(mint)?.priceUsd ?? 0;
+            const price24hAgo = price24hAgoMap.get(mint) ?? currentPrice;
+            unrealizedPnlChange24hUsd += record.totalTokensBought * (currentPrice - price24hAgo);
+        }
+
+        const pnl_change_24h = realizedPnlLast24hUsd + unrealizedPnlChange24hUsd;
+
         return {
             total_balance_usd,
             total_balance_sol,
-            balance_change_24h: 0,
+            balance_change_24h,
             pnl: {
                 total: total_pnl,
                 realized: realized_usd,
                 unrealized: unrealized_usd,
-                change_24h: 0,
+                change_24h: pnl_change_24h,
                 roi_percent
             },
             transactions: transactionStats,
