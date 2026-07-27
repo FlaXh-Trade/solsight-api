@@ -206,6 +206,9 @@ export class PortfolioService {
         }
 
         const mintAddresses = Array.from(aggregatedTokens.keys());
+        if (total_balance_sol > 0) {
+            mintAddresses.push(COMMON_TOKEN_MINT.SOL);
+        }
         const tokenMetaMap = await this.tokenService.findMany(cluster, mintAddresses);
 
         for (const [mint, data] of aggregatedTokens) {
@@ -231,18 +234,19 @@ export class PortfolioService {
 
         positions.sort((a, b) => b.valueUsd - a.valueUsd);
 
+        const solMeta = tokenMetaMap.get(COMMON_TOKEN_MINT.SOL);
         const solTopToken =
             solValueUsd > 0
                 ? [
                       {
-                          name: "Solana",
-                          symbol: "SOL",
-                          logo: "",
-                          decimals: 9,
+                          name: solMeta?.name || "Unknown",
+                          symbol: solMeta?.symbol || "???",
+                          logo: solMeta?.logoUri || "",
+                          decimals: solMeta?.decimals ?? 9,
                           amount: total_balance_sol,
                           value_usd: solValueUsd,
                           price: solPrice,
-                          change_24h: 0 // Placeholder
+                          change_24h: solPrice.priceChange24h ?? 0
                       }
                   ]
                 : [];
@@ -257,7 +261,7 @@ export class PortfolioService {
                 amount: p.amount,
                 value_usd: p.valueUsd,
                 price: p.price,
-                change_24h: 0 // Placeholder
+                change_24h: p.price?.priceChange24h ?? 0
             }))
         ]
             .sort((a, b) => b.value_usd - a.value_usd)
