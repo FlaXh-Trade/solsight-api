@@ -1,4 +1,4 @@
-import { HttpException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, HttpException, Injectable, Logger } from "@nestjs/common";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import { OpenAIService } from "../../../infra/openai/openai.service";
 import { SortByTrending, TimeFrame } from "../../discovery/dtos/get-trending.dto";
@@ -10,7 +10,7 @@ import { RagService } from "./rag.service";
 import { CircuitBreaker } from "../../../infra/executor/circuit-breaker/circuit-breaker";
 import * as fs from "fs";
 import * as path from "path";
-import type { Cluster } from "../../../common/cluster/cluster.types";
+import { isValidCluster, type Cluster } from "../../../common/cluster/cluster.types";
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, "../prompts/system.prompt.md"), "utf-8");
 
@@ -80,6 +80,16 @@ function toolLabel(toolName: string, args: Record<string, unknown>): string {
             const route = typeof args.route === "string" ? args.route : "…";
             return `Navigating to ${route}`;
         }
+        case "configure_daily_report":
+            return "Updating your daily report schedule…";
+        case "check_connection_status":
+            return "Checking your Telegram/Email connection status…";
+        case "connect_email": {
+            const email = typeof args.email === "string" ? args.email : "your email";
+            return `Connecting ${email} for notifications…`;
+        }
+        case "connect_telegram":
+            return "Generating your Telegram connection code…";
         default:
             return `Executing ${toolName}…`;
     }
@@ -239,6 +249,109 @@ export const TOOL_DEFINITIONS: ChatCompletionTool[] = [
     {
         type: "function",
         function: {
+            name: "check_connection_status",
+            description:
+                "Check whether the user has connected Telegram and/or Email for notifications. Use this when the user asks if they're connected, or before enabling the daily report to know which channels are available without guessing.",
+            parameters: {
+                type: "object",
+                properties: {
+                    userId: {
+                        type: "string",
+                        description: "Application user id"
+                    }
+                },
+                required: ["userId"],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "configure_daily_report",
+            description:
+                "Enable, disable, or update the user's recurring daily portfolio report, delivered automatically every morning via Telegram and/or email. Use this when the user asks to receive, change the time/channels of, or stop a daily report.",
+            parameters: {
+                type: "object",
+                properties: {
+                    userId: {
+                        type: "string",
+                        description: "Application user id"
+                    },
+                    enabled: {
+                        type: "boolean",
+                        description: "Whether the daily report should be turned on or off"
+                    },
+                    channels: {
+                        type: "array",
+                        items: { type: "string", enum: ["telegram", "email"] },
+                        description:
+                            "Delivery channels — one or both of telegram/email. Defaults to telegram. Each channel must already be connected/verified by the user."
+                    },
+                    hour: {
+                        type: "number",
+                        description: "Hour in UTC (0-23) the user wants to receive the report. Required when enabled is true."
+                    },
+                    minute: {
+                        type: "number",
+                        description: "Minute in UTC (0-59) the user wants to receive the report. Defaults to 0."
+                    },
+                    network: {
+                        type: "string",
+                        enum: ["mainnet", "devnet"],
+                        description: "Solana network the portfolio should be read from. Defaults to mainnet."
+                    }
+                },
+                required: ["userId", "enabled"],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "connect_email",
+            description:
+                'Connect (or reconnect) the user\'s email address for notifications, such as the daily portfolio report or wallet-tracker alerts. Use this when the user explicitly asks to connect/link/add an email, or provides an email address specifically to receive notifications there (e.g. "connect my email as foo@gmail.com", "send reports to foo@gmail.com"). This sends a verification email — the user is NOT connected yet until they click the link in their inbox. Any valid email address works, not just Gmail.',
+            parameters: {
+                type: "object",
+                properties: {
+                    userId: {
+                        type: "string",
+                        description: "Application user id"
+                    },
+                    email: {
+                        type: "string",
+                        description: "The email address to connect, exactly as provided by the user"
+                    }
+                },
+                required: ["userId", "email"],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "connect_telegram",
+            description:
+                'Start connecting the user\'s Telegram account for notifications, such as the daily portfolio report or wallet-tracker alerts. Use this when the user explicitly asks to connect/link Telegram (e.g. "connect my telegram", "link telegram"). Returns a short verification code the user must manually send as a message to the SolSight Telegram bot to finish connecting — relay that code and instruction back to the user verbatim.',
+            parameters: {
+                type: "object",
+                properties: {
+                    userId: {
+                        type: "string",
+                        description: "Application user id"
+                    }
+                },
+                required: ["userId"],
+                additionalProperties: false
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
             name: "prepare_swap",
             description: "Prepare swap intent object from user input without execution",
             parameters: {
@@ -370,6 +483,10 @@ import { Wallet } from "../../wallets/entities/wallet.entity";
 import { COMMON_SYMBOLS } from "src/modules/tokens/constants/token.constant";
 import { QuotaService } from "../../billing/services/quota.service";
 import { QuotaExceededException } from "../../billing/exceptions/quota-exceeded.exception";
+import { DailyReportSettingsService } from "../../portfolio-report/services/daily-report-settings.service";
+import { DailyReportChannel } from "../../portfolio-report/entities/daily-report-setting.entity";
+import { EmailSubscriptionService } from "../../email/services/email-subscription.service";
+import { BotService } from "../../bot/services/bot.service";
 
 @Injectable()
 export class ChatService {
@@ -384,6 +501,9 @@ export class ChatService {
         private readonly ragService: RagService,
         private readonly circuitBreaker: CircuitBreaker,
         private readonly quotaService: QuotaService,
+        private readonly dailyReportSettingsService: DailyReportSettingsService,
+        private readonly emailSubscriptionService: EmailSubscriptionService,
+        private readonly botService: BotService,
         @InjectRepository(ChatSessionEntity)
         private readonly sessionRepo: Repository<ChatSessionEntity>,
         @InjectRepository(ChatMessageEntity)
@@ -1271,6 +1391,115 @@ export class ChatService {
                         type: "navigation",
                         route
                     });
+                }
+
+                case "check_connection_status": {
+                    const resolvedUserId = userId || this.getStringArg(args, "userId");
+                    if (!resolvedUserId) {
+                        this.logger.warn("check_connection_status called without userId", ChatService.name);
+                        return JSON.stringify({ error: "User ID required — please log in" });
+                    }
+
+                    const [telegramConnected, emailConnected] = await Promise.all([
+                        this.dailyReportSettingsService.isChannelConnected(resolvedUserId, DailyReportChannel.TELEGRAM),
+                        this.dailyReportSettingsService.isChannelConnected(resolvedUserId, DailyReportChannel.EMAIL)
+                    ]);
+
+                    return JSON.stringify({ telegramConnected, emailConnected });
+                }
+
+                case "configure_daily_report": {
+                    const resolvedUserId = userId || this.getStringArg(args, "userId");
+                    if (!resolvedUserId) {
+                        this.logger.warn("configure_daily_report called without userId", ChatService.name);
+                        return JSON.stringify({ error: "User ID required — please log in" });
+                    }
+
+                    const enabled = args.enabled === true;
+                    const rawChannels = Array.isArray(args.channels) ? args.channels : [];
+                    const channels = rawChannels
+                        .map((c) => (c === "telegram" ? DailyReportChannel.TELEGRAM : c === "email" ? DailyReportChannel.EMAIL : null))
+                        .filter((c): c is DailyReportChannel => c !== null);
+                    const rawHour = Number(args.hour);
+                    const rawMinute = Number(args.minute);
+                    const rawNetwork = this.getStringArg(args, "network");
+                    const network = isValidCluster(rawNetwork) ? rawNetwork : undefined;
+
+                    try {
+                        const setting = await this.dailyReportSettingsService.applyLocalSchedule(resolvedUserId, {
+                            enabled,
+                            channels: channels.length > 0 ? channels : undefined,
+                            hour: Number.isFinite(rawHour) ? rawHour : undefined,
+                            minute: Number.isFinite(rawMinute) ? rawMinute : undefined,
+                            network
+                        });
+
+                        return JSON.stringify({
+                            enabled: setting.enabled,
+                            channels: setting.channels,
+                            hourUtc: setting.hourUtc,
+                            minuteUtc: setting.minuteUtc,
+                            network: setting.network
+                        });
+                    } catch (error) {
+                        const message = error instanceof BadRequestException ? error.message : "Failed to update daily report settings";
+                        return JSON.stringify({ error: message });
+                    }
+                }
+
+                case "connect_email": {
+                    const resolvedUserId = userId || this.getStringArg(args, "userId");
+                    if (!resolvedUserId) {
+                        this.logger.warn("connect_email called without userId", ChatService.name);
+                        return JSON.stringify({ error: "User ID required — please log in" });
+                    }
+
+                    const email = this.getStringArg(args, "email").trim();
+                    const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                    if (!email || !EMAIL_REGEX.test(email)) {
+                        return JSON.stringify({ error: "Please provide a valid email address" });
+                    }
+
+                    try {
+                        await this.emailSubscriptionService.initiateVerification(resolvedUserId, email);
+                        return JSON.stringify({
+                            success: true,
+                            email,
+                            message: `A verification email was sent to ${email}. The user must click the link in that email to finish connecting.`
+                        });
+                    } catch (error) {
+                        this.logger.error(
+                            `connect_email failed: ${error instanceof Error ? error.message : "unknown"}`,
+                            error instanceof Error ? error.stack : undefined,
+                            ChatService.name
+                        );
+                        return JSON.stringify({ error: "Failed to send verification email. Please try again later." });
+                    }
+                }
+
+                case "connect_telegram": {
+                    const resolvedUserId = userId || this.getStringArg(args, "userId");
+                    if (!resolvedUserId) {
+                        this.logger.warn("connect_telegram called without userId", ChatService.name);
+                        return JSON.stringify({ error: "User ID required — please log in" });
+                    }
+
+                    try {
+                        const sub = await this.botService.generateToken(resolvedUserId);
+                        return JSON.stringify({
+                            success: true,
+                            verificationToken: sub.verificationToken,
+                            tokenExpiresAt: sub.tokenExpiresAt?.toISOString(),
+                            instructions: `Send the code ${sub.verificationToken} to the SolSight Telegram bot to connect your account.`
+                        });
+                    } catch (error) {
+                        this.logger.error(
+                            `connect_telegram failed: ${error instanceof Error ? error.message : "unknown"}`,
+                            error instanceof Error ? error.stack : undefined,
+                            ChatService.name
+                        );
+                        return JSON.stringify({ error: "Failed to generate a Telegram connection code. Please try again later." });
+                    }
                 }
 
                 default:

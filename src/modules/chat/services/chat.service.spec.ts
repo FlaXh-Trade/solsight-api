@@ -11,6 +11,9 @@ import type { ChatSession } from "../entities/chat-session.entity";
 import type { RagService } from "./rag.service";
 import type { QuotaService } from "../../billing/services/quota.service";
 import { QuotaExceededException } from "../../billing/exceptions/quota-exceeded.exception";
+import type { DailyReportSettingsService } from "../../portfolio-report/services/daily-report-settings.service";
+import type { EmailSubscriptionService } from "../../email/services/email-subscription.service";
+import type { BotService } from "../../bot/services/bot.service";
 import type { SendMessagePayload } from "../types/chat.types";
 import { ChatService } from "./chat.service";
 
@@ -34,6 +37,9 @@ describe("ChatService executor routing", () => {
             {} as RagService,
             circuitBreaker,
             {} as QuotaService,
+            {} as DailyReportSettingsService,
+            {} as EmailSubscriptionService,
+            {} as BotService,
             repository,
             {} as Repository<ChatMessage>,
             {} as Repository<Wallet>
@@ -75,6 +81,9 @@ function createChatServiceForQuotaTests(quotaService: jest.Mocked<QuotaService>,
         ragService,
         {} as CircuitBreaker,
         quotaService,
+        {} as DailyReportSettingsService,
+        {} as EmailSubscriptionService,
+        {} as BotService,
         sessionRepo,
         messageRepo,
         {} as Repository<Wallet>

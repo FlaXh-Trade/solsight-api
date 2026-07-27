@@ -168,22 +168,26 @@ export class PortfolioService {
         return prices.reduce((a, b) => a + b, 0) / prices.length;
     }
 
-    async getOverview(cluster: Cluster, userId: string, walletAddresses?: string[], _timeFrame?: string) {
+    async getOverview(cluster: Cluster, userId: string, walletAddresses?: string[], _timeFrame?: string, topTokensLimit = 5) {
         let wallets = await this.walletsService.findByUserId(userId);
 
         if (walletAddresses && walletAddresses.length > 0) {
             wallets = wallets.filter((w) => walletAddresses.includes(w.address));
         }
 
-        const tokenAccountGroups: ParsedTokenAccount[][] = await Promise.all(
-            wallets.map((wallet) => this.solanaService.getParsedTokenAccountsByOwner(cluster, new PublicKey(wallet.address)))
-        );
+        const [tokenAccountGroups, solBalances] = await Promise.all([
+            Promise.all(wallets.map((wallet) => this.solanaService.getParsedTokenAccountsByOwner(cluster, new PublicKey(wallet.address)))),
+            Promise.all(wallets.map((wallet) => this.solanaService.getBalance(cluster, new PublicKey(wallet.address))))
+        ]);
         const allTokenAccounts: ParsedTokenAccount[] = tokenAccountGroups.reduce((accumulator, group) => accumulator.concat(group), [] as ParsedTokenAccount[]);
 
         const solPrice = await this.tokenPriceService.getPrice(cluster, COMMON_TOKEN_MINT.SOL);
 
-        const total_balance_sol = wallets.reduce((acc, w) => acc + Number(w.balance || 0), 0);
+        // Fetched live for `cluster` above rather than reading `wallet.balance`, which is a cached
+        // column last synced under whatever cluster updateBalance() was called with (often mainnet).
+        const total_balance_sol = solBalances.reduce((acc, b) => acc + b, 0);
         let total_balance_usd = total_balance_sol * solPrice.priceUsd;
+        const solValueUsd = total_balance_usd;
 
         const aggregatedTokens = new Map<string, AggregatedTokenHolding>();
 
@@ -202,6 +206,9 @@ export class PortfolioService {
         }
 
         const mintAddresses = Array.from(aggregatedTokens.keys());
+        if (total_balance_sol > 0) {
+            mintAddresses.push(COMMON_TOKEN_MINT.SOL);
+        }
         const tokenMetaMap = await this.tokenService.findMany(cluster, mintAddresses);
 
         for (const [mint, data] of aggregatedTokens) {
@@ -227,15 +234,38 @@ export class PortfolioService {
 
         positions.sort((a, b) => b.valueUsd - a.valueUsd);
 
-        const top_tokens = positions.slice(0, 5).map((p) => ({
-            name: p.name || "Unknown",
-            symbol: p.symbol || "???",
-            logo: p.logoUri || "",
-            decimals: p.decimals,
-            value_usd: p.valueUsd,
-            price: p.price,
-            change_24h: 0 // Placeholder
-        }));
+        const solMeta = tokenMetaMap.get(COMMON_TOKEN_MINT.SOL);
+        const solTopToken =
+            solValueUsd > 0
+                ? [
+                      {
+                          name: solMeta?.name || "Unknown",
+                          symbol: solMeta?.symbol || "???",
+                          logo: solMeta?.logoUri || "",
+                          decimals: solMeta?.decimals ?? 9,
+                          amount: total_balance_sol,
+                          value_usd: solValueUsd,
+                          price: solPrice,
+                          change_24h: solPrice.priceChange24h ?? 0
+                      }
+                  ]
+                : [];
+
+        const top_tokens = [
+            ...solTopToken,
+            ...positions.map((p) => ({
+                name: p.name || "Unknown",
+                symbol: p.symbol || "???",
+                logo: p.logoUri || "",
+                decimals: p.decimals,
+                amount: p.amount,
+                value_usd: p.valueUsd,
+                price: p.price,
+                change_24h: p.price?.priceChange24h ?? 0
+            }))
+        ]
+            .sort((a, b) => b.value_usd - a.value_usd)
+            .slice(0, topTokensLimit);
 
         const allocation = positions.map((p) => ({
             name: p.name || "Unknown",
@@ -245,11 +275,10 @@ export class PortfolioService {
         }));
 
         // Add SOL to allocation
-        const solValueUsd = total_balance_sol * solPrice.priceUsd;
         if (solValueUsd > 0) {
             allocation.push({
-                name: "Solana",
-                symbol: "SOL",
+                name: solMeta?.name || "Unknown",
+                symbol: solMeta?.symbol || "???",
                 value_usd: solValueUsd,
                 percentage: total_balance_usd > 0 ? (solValueUsd / total_balance_usd) * 100 : 0
             });
@@ -276,15 +305,57 @@ export class PortfolioService {
         const total_investment_usd = Array.from(pnlMap.values()).reduce((acc, r) => acc + r.investment * solPrice.priceUsd, 0);
         const roi_percent = total_investment_usd > 0 ? (total_pnl / total_investment_usd) * 100 : 0;
 
+        // 24h deltas: approximate using each held mint's price ~24h ago (day-bucketed history),
+        // holding current amounts constant. Ignores trades within the last 24h for the price-diff
+        // piece, which is why pnl_change_24h adds back the realized PnL those trades produced.
+        const nowSec = Math.floor(Date.now() / 1000);
+        const dayAgoSec = nowSec - 86400;
+        const priceHistories = await Promise.all(mintAddresses.map((mint) => this.tokenPriceService.getPriceHistory(cluster, mint, dayAgoSec, nowSec)));
+        const price24hAgoMap = new Map<string, number>();
+        mintAddresses.forEach((mint, i) => {
+            const chart = priceHistories[i];
+            if (chart.size > 0) price24hAgoMap.set(mint, this.getSolPriceNear(dayAgoSec, chart));
+        });
+
+        let balance24hAgoUsd = total_balance_sol * (price24hAgoMap.get(COMMON_TOKEN_MINT.SOL) ?? solPrice.priceUsd);
+        for (const [mint, data] of aggregatedTokens) {
+            const price24hAgo = price24hAgoMap.get(mint) ?? tokenPrices.get(mint)?.priceUsd ?? 0;
+            balance24hAgoUsd += data.amount * price24hAgo;
+        }
+        const balance_change_24h = balance24hAgoUsd > 0 ? ((total_balance_usd - balance24hAgoUsd) / balance24hAgoUsd) * 100 : 0;
+
+        // pnl 24h change = realized PnL booked by trades in the last 24h + unrealized PnL swing
+        // from price movement over the last 24h on positions still held.
+        const tradesLast24h = trades.filter((t) => t.timestamp >= dayAgoSec);
+        const tradesBefore24h = trades.filter((t) => t.timestamp < dayAgoSec);
+        const pnlMapBefore24h = this.calculatePnl(tradesBefore24h);
+        const avgSolPriceLast24h = await this.getAvgHistoricalSolPrice(cluster, tradesLast24h, solPrice.priceUsd);
+
+        let realizedPnlLast24hUsd = 0;
+        for (const [mint, record] of pnlMap) {
+            const before = pnlMapBefore24h.get(mint);
+            realizedPnlLast24hUsd += (record.pnl - (before?.pnl ?? 0)) * avgSolPriceLast24h;
+        }
+
+        let unrealizedPnlChange24hUsd = 0;
+        for (const [mint, record] of pnlMap) {
+            if (record.totalTokensBought <= 0) continue;
+            const currentPrice = tokenPrices.get(mint)?.priceUsd ?? 0;
+            const price24hAgo = price24hAgoMap.get(mint) ?? currentPrice;
+            unrealizedPnlChange24hUsd += record.totalTokensBought * (currentPrice - price24hAgo);
+        }
+
+        const pnl_change_24h = realizedPnlLast24hUsd + unrealizedPnlChange24hUsd;
+
         return {
             total_balance_usd,
             total_balance_sol,
-            balance_change_24h: 0,
+            balance_change_24h,
             pnl: {
                 total: total_pnl,
                 realized: realized_usd,
                 unrealized: unrealized_usd,
-                change_24h: 0,
+                change_24h: pnl_change_24h,
                 roi_percent
             },
             transactions: transactionStats,

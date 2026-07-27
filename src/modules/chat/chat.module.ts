@@ -8,6 +8,9 @@ import { VectorStoreModule } from "../../infra/vectorstore/vectorstore.module";
 import { BillingModule } from "../billing/billing.module";
 import { DiscoveryModule } from "../discovery/discovery.module";
 import { PortfolioModule } from "../portfolio/portfolio.module";
+import { PortfolioReportModule } from "../portfolio-report/portfolio-report.module";
+import { EmailModule } from "../email/email.module";
+import { BotModule } from "../bot/bot.module";
 import { TokensModule } from "../tokens/tokens.module";
 import { ChatService } from "./services/chat.service";
 import { RagService } from "./services/rag.service";
@@ -34,6 +37,9 @@ import { RagDocument } from "./entities/rag-document.entity";
         }),
         TokensModule,
         PortfolioModule,
+        PortfolioReportModule,
+        EmailModule,
+        BotModule,
         DiscoveryModule,
         LoggerModule,
         WebsocketModule,
