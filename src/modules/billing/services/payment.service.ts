@@ -76,7 +76,9 @@ export class PaymentService {
             throw new BadRequestException(`Order is ${order.status}, cannot submit payment.`);
         }
 
-        const { signature } = await this.solanaService.submitAndConfirm(cluster, dto.signedTransaction);
+        const { signature } = await this.solanaService.submitAndConfirm(cluster, dto.signedTransaction, {
+            lastValidBlockheight: dto.lastValidBlockHeight
+        });
         const result = await this.completeOrder(order.id, signature);
 
         return { success: true, creditsAdded: result.credits ?? order.credits, alreadyProcessed: result.alreadyProcessed };

@@ -16,8 +16,8 @@ export interface JitoTipFloorSample {
 }
 
 /**
- * JSON-RPC envelope returned by the Jito block engine `sendBundle` method.
- * `result` is the bundle id (a hash) on success; `error` is populated on failure.
+ * JSON-RPC envelope returned by the Jito block engine.
+ * `result` is the transaction signature on success; `error` is populated on failure.
  */
 export interface JitoJsonRpcResponse<T> {
     jsonrpc?: string;
@@ -27,32 +27,4 @@ export interface JitoJsonRpcResponse<T> {
         code?: number;
         message?: string;
     };
-}
-
-export type JitoSendBundleResult = string;
-
-/**
- * Result of submitting and tracking a single-transaction bundle.
- * `landed` is authoritative (Jito verifies on-chain inclusion); `status` is the
- * last observed in-flight status for diagnostics/error messaging.
- */
-export interface JitoBundleResult {
-    signature: string;
-    bundleId: string;
-    landed: boolean;
-    status: JitoInflightStatus;
-}
-
-export type JitoInflightStatus = "Invalid" | "Pending" | "Failed" | "Landed";
-
-/**
- * `getInflightBundleStatuses` response payload (JSON-RPC `result`).
- * `value` holds one entry per queried bundle id.
- */
-export interface JitoInflightBundleStatuses {
-    value: Array<{
-        bundle_id: string;
-        status: JitoInflightStatus;
-        landed_slot: number | null;
-    }>;
 }

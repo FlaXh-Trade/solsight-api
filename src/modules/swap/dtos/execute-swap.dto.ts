@@ -7,6 +7,9 @@ export class ExecuteSwapDto {
     @IsString()
     signedTransaction: string;
 
+    @IsNumber()
+    lastValidBlockHeight: number;
+
     @IsOptional()
     @IsSolanaAddress()
     gaslessFeeToken?: string;

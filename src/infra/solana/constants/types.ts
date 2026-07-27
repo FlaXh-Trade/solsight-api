@@ -262,4 +262,4 @@ export type EnhancedTransaction = {
     };
 };
 
-export type SubmitAndConfirmOptions = Pick<SendOptions, "skipPreflight" | "maxRetries"> & { commitment?: Commitment };
+export type SubmitAndConfirmOptions = Pick<SendOptions, "skipPreflight" | "maxRetries"> & { commitment?: Commitment; lastValidBlockheight?: number };
