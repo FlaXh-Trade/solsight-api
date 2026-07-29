@@ -1,5 +1,6 @@
 import type { PublicKey } from "@solana/web3.js";
 import type { Cluster } from "../../../common/cluster/cluster.types";
+import type { StakingProtocol } from "../config/staking-addresses";
 import type { StakingTransactionAction } from "../dtos/build-staking-transaction.dto";
 
 export const DEFAULT_HISTORY_PAGE_SIZE = 8;
@@ -35,6 +36,8 @@ export interface NativeStakePositionsPage {
 }
 
 export interface StakingPositionResponse {
+    /** Which LST pool `liquid` refers to; `native` is protocol-agnostic. */
+    protocol: StakingProtocol;
     liquid: LiquidPositionResponse | null;
     native: NativeStakePositionsPage;
 }
@@ -69,6 +72,8 @@ export interface BuiltStakingTransaction {
     blockhash: string;
     lastValidBlockHeight: number;
     nativeStakeAddress?: string;
+    /** Which LST pool this transaction targets; only set for mode=liquid. */
+    protocol?: StakingProtocol;
 }
 
 export type CompiledMessageShape = {

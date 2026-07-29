@@ -28,8 +28,10 @@ export const ACCOUNT_DISC = {
 } as const;
 
 // ─── PDAs ──────────────────────────────────────────────────────────────────────
-export function findStakePoolConfigPda(programId: PublicKey, authority: PublicKey): [PublicKey, number] {
-    return PublicKey.findProgramAddressSync([Buffer.from("stake_pool_config"), authority.toBuffer()], programId);
+// Seeded by pool_mint (in addition to authority) so one authority can run
+// several LST configs side by side — see staking-program/programs/staking/src/state.rs.
+export function findStakePoolConfigPda(programId: PublicKey, authority: PublicKey, poolMint: PublicKey): [PublicKey, number] {
+    return PublicKey.findProgramAddressSync([Buffer.from("stake_pool_config"), authority.toBuffer(), poolMint.toBuffer()], programId);
 }
 
 export function findApprovedValidatorPda(programId: PublicKey, stakePoolConfig: PublicKey, voteAccount: PublicKey): [PublicKey, number] {
