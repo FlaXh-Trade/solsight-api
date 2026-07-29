@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import type { Cluster } from "../../../common/cluster/cluster.types";
-import { DEVNET_POOL, MAINNET_POOL } from "./staking-addresses";
+import { STAKE_POOLS_BY_PROTOCOL, StakingProtocol } from "./staking-addresses";
 
 export interface StakePoolCoordinates {
     stakePoolProgram: PublicKey;
@@ -11,8 +11,8 @@ export interface StakePoolCoordinates {
     managerFeeAccount: PublicKey;
 }
 
-export function getStakePoolCoordinates(cluster: Cluster): StakePoolCoordinates {
-    const pool = cluster === "mainnet" ? MAINNET_POOL : DEVNET_POOL;
+export function getStakePoolCoordinates(cluster: Cluster, protocol: StakingProtocol): StakePoolCoordinates {
+    const pool = cluster === "mainnet" ? STAKE_POOLS_BY_PROTOCOL[protocol].mainnet : STAKE_POOLS_BY_PROTOCOL[protocol].devnet;
 
     return {
         stakePoolProgram: new PublicKey(pool.stakePoolProgram),
