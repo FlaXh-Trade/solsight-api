@@ -24,6 +24,7 @@ export interface NativeStakeAccountResponse {
     lamports: string;
     estimatedSol: number;
     status: NativeStakeStatus;
+    withdrawableLamports: string;
 }
 
 export interface NativeStakePositionsPage {

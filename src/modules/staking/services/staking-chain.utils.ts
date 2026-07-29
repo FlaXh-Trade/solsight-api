@@ -195,9 +195,12 @@ const STAKE_META_STAKER_OFFSET = 4 + 8;
 const STAKE_META_WITHDRAWER_OFFSET = STAKE_META_STAKER_OFFSET + 32;
 const STAKE_META_SIZE = 8 + 32 + 32 + (8 + 8 + 32);
 const STAKE_DELEGATION_OFFSET = 4 + STAKE_META_SIZE;
+const STAKE_ACCOUNT_MIN_LENGTH = STAKE_DELEGATION_OFFSET + 32 + 8 + 8 + 8;
 const MAX_U64 = (BigInt(1) << BigInt(64)) - BigInt(1);
 
 export function decodeNativeStakeAccount(data: Uint8Array): NativeStakeAccountState | null {
+    if (data.byteLength < STAKE_ACCOUNT_MIN_LENGTH) return null;
+
     const view = new DataView(data.buffer, data.byteOffset);
     const tag = view.getUint32(0, true);
     if (tag !== 2) return null; // not a Stake-state account (Uninitialized/Initialized/RewardsPool)

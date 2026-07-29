@@ -137,8 +137,12 @@ export class StakingService {
         const currentEpoch = BigInt(epochInfo.epoch);
 
         const items: NativeStakePositionsPage["items"] = [];
+        const closedRowIds: string[] = [];
         infos.forEach((info, index) => {
-            if (!info) return;
+            if (!info) {
+                closedRowIds.push(rows[index].id);
+                return;
+            }
             const state = decodeNativeStakeAccount(info.data);
             if (!state) return;
             items.push({
@@ -146,10 +150,18 @@ export class StakingService {
                 voteAccount: state.voteAccount.toBase58(),
                 lamports: state.stakeLamports.toString(),
                 estimatedSol: Number(state.stakeLamports) / LAMPORTS_PER_SOL,
-                status: classifyNativeStakeStatus(state, currentEpoch)
+                status: classifyNativeStakeStatus(state, currentEpoch),
+                withdrawableLamports: info.lamports.toString()
             });
         });
-        return { items, total, page, pageSize };
+
+        if (closedRowIds.length > 0) {
+            await this.nativeAccountRepository.delete(closedRowIds).catch((error: unknown) => {
+                this.logger.warn(`Failed to clean up closed native stake account rows: ${error instanceof Error ? error.message : String(error)}`);
+            });
+        }
+
+        return { items, total: total - closedRowIds.length, page, pageSize };
     }
 
     // getMultipleAccounts is capped at 100 pubkeys/call by the RPC itself — chunk to stay under it.
