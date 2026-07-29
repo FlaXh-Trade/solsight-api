@@ -20,7 +20,7 @@ import { HeliusResolver } from "../../../infra/solana/helius.resolver";
 import { HeliusService } from "../../../infra/solana/helius.service";
 import { SolanaService } from "../../../infra/solana/solana.service";
 import { getStakePoolCoordinates, StakePoolCoordinates } from "../config/pool-config";
-import { STAKING_AUTHORITY, STAKING_PROGRAM_ID } from "../config/staking-addresses";
+import { STAKING_AUTHORITY, STAKING_PROGRAM_ID, StakingProtocol } from "../config/staking-addresses";
 import { BuildStakingTransactionDto, StakingTransactionAction } from "../dtos/build-staking-transaction.dto";
 import { ExecuteStakingTransactionDto } from "../dtos/execute-staking-transaction.dto";
 import { GetStakingHistoryDto } from "../dtos/get-staking-history.dto";
@@ -68,6 +68,12 @@ import {
 } from "./staking-chain.utils";
 
 const STAKE_CONFIG_ID = new PublicKey("StakeConfig11111111111111111111111111111111");
+// jitoSOL is the pool native staking's approved-validator list was originally
+// set up under; native staking (plain SOL delegation) isn't LST-specific, so
+// it always resolves its stake_pool_config off this pool rather than exposing
+// a protocol choice to the caller.
+const NATIVE_STAKING_PROTOCOL: StakingProtocol = "jito";
+const DEFAULT_LIQUID_PROTOCOL: StakingProtocol = "jito";
 const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
 // Solana RPC's getMultipleAccounts hard-caps at 100 pubkeys per call.
 const GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE = 100;
@@ -94,7 +100,8 @@ export class StakingService {
         this.assertRequestCluster(cluster, network);
         const owner = this.parsePublicKey(dto.wallet, "wallet");
         const rpc = this.heliusResolver.forCluster(network);
-        const pool = this.getPool(network);
+        const protocol = this.resolveLiquidProtocol(dto.protocol);
+        const pool = this.getPool(network, protocol);
 
         const userAta = getAssociatedTokenAddressSync(pool.lstMint, owner);
         const [ataInfo, stakePoolInfo] = await Promise.all([rpc.getAccountInfo(userAta, "confirmed"), rpc.getAccountInfo(pool.stakePool, "confirmed")]);
@@ -114,7 +121,7 @@ export class StakingService {
         }
 
         const native = await this.getNativePositions(network, rpc, owner, dto.page ?? 1, dto.pageSize ?? DEFAULT_NATIVE_PAGE_SIZE);
-        return { liquid, native };
+        return { protocol, liquid, native };
     }
 
     private async getNativePositions(
@@ -137,8 +144,12 @@ export class StakingService {
         const currentEpoch = BigInt(epochInfo.epoch);
 
         const items: NativeStakePositionsPage["items"] = [];
+        const closedRowIds: string[] = [];
         infos.forEach((info, index) => {
-            if (!info) return;
+            if (!info) {
+                closedRowIds.push(rows[index].id);
+                return;
+            }
             const state = decodeNativeStakeAccount(info.data);
             if (!state) return;
             items.push({
@@ -146,10 +157,18 @@ export class StakingService {
                 voteAccount: state.voteAccount.toBase58(),
                 lamports: state.stakeLamports.toString(),
                 estimatedSol: Number(state.stakeLamports) / LAMPORTS_PER_SOL,
-                status: classifyNativeStakeStatus(state, currentEpoch)
+                status: classifyNativeStakeStatus(state, currentEpoch),
+                withdrawableLamports: info.lamports.toString()
             });
         });
-        return { items, total, page, pageSize };
+
+        if (closedRowIds.length > 0) {
+            await this.nativeAccountRepository.delete(closedRowIds).catch((error: unknown) => {
+                this.logger.warn(`Failed to clean up closed native stake account rows: ${error instanceof Error ? error.message : String(error)}`);
+            });
+        }
+
+        return { items, total: total - closedRowIds.length, page, pageSize };
     }
 
     // getMultipleAccounts is capped at 100 pubkeys/call by the RPC itself — chunk to stay under it.
@@ -182,7 +201,8 @@ export class StakingService {
         const network = this.getConfiguredNetwork();
         this.assertRequestCluster(cluster, network);
         const owner = this.parsePublicKey(dto.wallet, "wallet");
-        const pool = this.getPool(network);
+        const protocol = this.resolveLiquidProtocol(dto.protocol);
+        const pool = this.getPool(network, protocol);
         const programId = this.getProgramId();
         const pageSize = dto.pageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
         const before = dto.before;
@@ -420,7 +440,8 @@ export class StakingService {
             transaction: Buffer.from(tx.serialize()).toString("base64"),
             blockhash: latestBlockhash.blockhash,
             lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-            nativeStakeAddress
+            nativeStakeAddress,
+            protocol: dto.mode === "liquid" ? this.resolveLiquidProtocol(dto.protocol) : undefined
         };
     }
 
@@ -462,8 +483,9 @@ export class StakingService {
     ): Promise<{ instructions: TxIx[]; nativeStakeAddress?: string }> {
         const programId = this.getProgramId();
         const authority = this.getAuthority();
-        const [stakePoolConfig] = findStakePoolConfigPda(programId, authority);
-        const pool = this.getPool(network);
+        const protocol = this.resolveLiquidProtocol(dto.protocol);
+        const pool = this.getPool(network, protocol);
+        const [stakePoolConfig] = findStakePoolConfigPda(programId, authority, pool.lstMint);
         const userPoolTokenAccount = getAssociatedTokenAddressSync(pool.lstMint, owner);
 
         if (dto.action === "stake") {
@@ -608,7 +630,8 @@ export class StakingService {
     ): Promise<{ instruction: TxIx; nativeStakeAddress?: string }> {
         const programId = this.getProgramId();
         const authority = this.getAuthority();
-        const [stakePoolConfig] = findStakePoolConfigPda(programId, authority);
+        const nativePool = this.getPool(network, NATIVE_STAKING_PROTOCOL);
+        const [stakePoolConfig] = findStakePoolConfigPda(programId, authority, nativePool.lstMint);
 
         if (dto.action === "stake") {
             const amountLamports = this.requirePositiveAmount(dto.amountLamports, "stake");
@@ -692,8 +715,12 @@ export class StakingService {
     }
 
     // ─── Config helpers ──────────────────────────────────────────────────────
-    private getPool(network: Cluster): StakePoolCoordinates {
-        return getStakePoolCoordinates(network);
+    private getPool(network: Cluster, protocol: StakingProtocol): StakePoolCoordinates {
+        return getStakePoolCoordinates(network, protocol);
+    }
+
+    private resolveLiquidProtocol(protocol: StakingProtocol | undefined): StakingProtocol {
+        return protocol ?? DEFAULT_LIQUID_PROTOCOL;
     }
 
     private getProgramId(): PublicKey {

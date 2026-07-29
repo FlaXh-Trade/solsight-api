@@ -3,13 +3,24 @@ import { BuildStakingTransactionDto } from "../dtos/build-staking-transaction.dt
 import { ExecuteStakingTransactionDto } from "../dtos/execute-staking-transaction.dto";
 import { GetStakingHistoryDto } from "../dtos/get-staking-history.dto";
 import { GetStakingPositionDto } from "../dtos/get-staking-position.dto";
+import { StakingApyService } from "../services/staking-apy.service";
 import { StakingService } from "../services/staking.service";
 import { RequestCluster } from "../../../common/cluster/request-cluster.decorator";
 import type { Cluster } from "../../../common/cluster/cluster.types";
 
 @Controller("staking")
 export class StakingController {
-    constructor(private readonly stakingService: StakingService) {}
+    constructor(
+        private readonly stakingService: StakingService,
+        private readonly stakingApyService: StakingApyService
+    ) {}
+
+    // Cluster-agnostic on purpose: APY is always sourced from mainnet, for
+    // both devnet and mainnet deployments — see StakingApyService.
+    @Get("apy")
+    getApy() {
+        return this.stakingApyService.getApy();
+    }
 
     @Get("position")
     getPosition(@RequestCluster() cluster: Cluster, @Query() dto: GetStakingPositionDto) {

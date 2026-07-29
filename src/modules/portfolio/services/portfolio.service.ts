@@ -7,6 +7,7 @@ import { SolanaService } from "../../../infra/solana/solana.service";
 import { CACHE_MANAGER } from "@nestjs/cache-manager";
 import { Cache } from "cache-manager";
 import axios from "axios";
+import bs58 from "bs58";
 import { PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Transaction, TransactionType, TransactionStatus } from "../../transactions/entities/transaction.entity";
 import { WalletSnapshot } from "../entities/wallet-snapshot.entity";
@@ -30,8 +31,18 @@ import {
 import { EnhancedTransaction, NativeTransfer, TokenTransfer } from "../../../infra/solana/constants/types";
 import { Wallet } from "../../wallets/entities/wallet.entity";
 import { TokenPriceService } from "src/modules/tokens/services/token-price.service";
+import { STAKING_PROGRAM_ID } from "../../staking/config/staking-addresses";
+import { IX_DISC } from "../../staking/services/staking-chain.utils";
 
 const DEX_SOURCES = ["JUPITER", "RAYDIUM", "ORCA", "METEORA", "PHOENIX", "OPENBOOK", "SOLFI"];
+
+const STAKING_IX_DISC_TO_ACTIVITY_TYPE = new Map<string, "STAKE" | "UNSTAKE" | "WITHDRAW">([
+    [Buffer.from(IX_DISC.stake).toString("hex"), "STAKE"],
+    [Buffer.from(IX_DISC.stakeNative).toString("hex"), "STAKE"],
+    [Buffer.from(IX_DISC.unstake).toString("hex"), "UNSTAKE"],
+    [Buffer.from(IX_DISC.unstakeNative).toString("hex"), "UNSTAKE"],
+    [Buffer.from(IX_DISC.withdrawNative).toString("hex"), "WITHDRAW"]
+]);
 
 @Injectable()
 export class PortfolioService {
@@ -706,6 +717,21 @@ export class PortfolioService {
         }
     }
 
+    private classifyStakingActivity(tx: EnhancedTransaction): "STAKE" | "UNSTAKE" | "WITHDRAW" | null {
+        const allIxs = (tx.instructions ?? []).flatMap((ix) => [ix, ...(ix.innerInstructions ?? [])]);
+        for (const ix of allIxs) {
+            if (ix.programId !== STAKING_PROGRAM_ID) continue;
+            try {
+                const disc = bs58.decode(ix.data).subarray(0, 8);
+                const activityType = STAKING_IX_DISC_TO_ACTIVITY_TYPE.get(Buffer.from(disc).toString("hex"));
+                if (activityType) return activityType;
+            } catch {
+                continue;
+            }
+        }
+        return null;
+    }
+
     private formatSourceName(source: string): string {
         if (!source || source === "UNKNOWN") return "Unknown";
         return source.charAt(0) + source.slice(1).toLowerCase().replace(/_/g, " ");
@@ -724,19 +750,20 @@ export class PortfolioService {
         const txUrl = cluster === "devnet" ? `https://solscan.io/tx/${tx.signature}?cluster=devnet` : `https://solscan.io/tx/${tx.signature}`;
 
         const isDexSwap = tx.type === "SWAP" || (tx.type === "UNKNOWN" && DEX_SOURCES.includes(tx.source));
+        const stakingActivity = isDexSwap ? null : this.classifyStakingActivity(tx);
 
         let app: ActivityApp = {
-            name: this.formatSourceName(tx.source),
+            name: stakingActivity ? "Solsight Staking" : this.formatSourceName(tx.source),
             type: isDexSwap ? "DEX" : "PROGRAM",
             icon: ""
         };
 
         const status: "success" | "failed" = tx.transactionError ? "failed" : "success";
 
-        const tags: string[] = [tx.type].filter(Boolean);
+        const tags: string[] = [stakingActivity ?? tx.type].filter(Boolean);
         if (tx.source && tx.source !== "UNKNOWN") tags.push(tx.source);
 
-        let type: string = isDexSwap ? "SWAP" : tx.type;
+        let type: string = isDexSwap ? "SWAP" : (stakingActivity ?? tx.type);
         let token_in: ActivityToken | undefined;
         let token_out: ActivityToken | undefined;
         let token: ActivityToken | undefined;
@@ -813,6 +840,18 @@ export class PortfolioService {
                         value_usd: 0
                     };
                 }
+            }
+        } else if (stakingActivity) {
+            const nativeTransfer = (tx.nativeTransfers ?? [])[0];
+            if (nativeTransfer) {
+                const amount = nativeTransfer.amount / LAMPORTS_PER_SOL;
+                token = {
+                    address: COMMON_TOKEN_MINT.SOL,
+                    symbol: "SOL",
+                    logo_uri: (await this.tokenService.getTokenMetadata(cluster, COMMON_TOKEN_MINT.SOL))?.logoUri ?? "",
+                    amount,
+                    value_usd: amount * solPrice
+                };
             }
         } else if (tx.type === "TRANSFER") {
             // Only show transfers where the user's wallet is the direct sender or receiver.

@@ -1,5 +1,6 @@
 import { IsIn, IsOptional, IsString, Matches } from "class-validator";
 import { IsSolanaAddress } from "../../../common/validators/is-solana-address.validator";
+import { STAKING_PROTOCOLS, StakingProtocol } from "../config/staking-addresses";
 import { StakingMode } from "../types/staking.types";
 
 export type StakingTransactionAction = "stake" | "unstake" | "withdraw";
@@ -14,6 +15,11 @@ export class BuildStakingTransactionDto {
     @IsString()
     @IsSolanaAddress()
     wallet!: string;
+
+    /** Which LST pool to stake/unstake against. Only used for mode=liquid; defaults to jito. */
+    @IsOptional()
+    @IsIn(STAKING_PROTOCOLS)
+    protocol?: StakingProtocol;
 
     @IsOptional()
     @IsString()
